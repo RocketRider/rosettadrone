@@ -126,7 +126,7 @@ public class Waypoint2Activity extends FragmentActivity implements View.OnClickL
      */
     public void onReturn(View view) {
         Log.d(TAG, "onReturn");
-        this.finish();
+        //this.finish();
     }
 
     private void setResultToToast(final String string) {

@@ -99,7 +99,7 @@ public class MapActivity extends FragmentActivity implements View.OnClickListene
      */
     public void onReturn(View view) {
         Log.d(TAG, "onReturn");
-        this.finish();
+        //this.finish();
     }
 
     private void setResultToToast(final String string) {

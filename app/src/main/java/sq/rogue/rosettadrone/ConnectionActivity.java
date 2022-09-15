@@ -211,7 +211,7 @@ public class ConnectionActivity extends Activity implements View.OnClickListener
         if (KeyManager.getInstance() != null) {
             KeyManager.getInstance().removeListener(firmVersionListener);
         }
-        unregisterReceiver(mReceiver);
+        //unregisterReceiver(mReceiver);
         super.onDestroy();
     }
 
@@ -402,7 +402,7 @@ public class ConnectionActivity extends Activity implements View.OnClickListener
                 break;
             }
             case R.id.btn_start: {
-                mBtnOpen.setEnabled(false);
+                //mBtnOpen.setEnabled(false);
                 unregisterReceiver(mReceiver);
 
                 Log.v(TAG, "Start Maintask");

@@ -487,7 +487,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         doUnbindService();
 
         //Intent intent = getIntent();
-        finish();
+        //finish();
         super.onDestroy();
     }
 
@@ -1072,6 +1072,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
             case Phantom_3_4K:
             case MAVIC_MINI:
             case MAVIC_PRO:
+            //case MAVIC_2_ENTERPRISE_DUAL:
             case INSPIRE_1:
             case Spark:
             case MAVIC_AIR_2:
@@ -1316,7 +1317,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
                 origin.close();
                 files.get(i).delete();
             }
-            out.finish();
+            //out.finish();
             out.close();
 
         } catch (IOException e) {
@@ -1574,7 +1575,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
                         Toast.LENGTH_LONG).show();
 
                 Intent intent = getIntent();
-                finish();
+                //finish();
                 startActivity(intent);
                 return;
             }
