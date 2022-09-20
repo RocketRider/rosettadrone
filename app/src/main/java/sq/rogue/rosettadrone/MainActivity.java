@@ -17,7 +17,9 @@ import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.res.AssetManager;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.SurfaceTexture;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
@@ -28,6 +30,7 @@ import android.location.Geocoder;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
+import android.media.MediaFormat;
 import android.media.Ringtone;
 import android.media.RingtoneManager;
 import android.net.Uri;
@@ -37,6 +40,10 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.renderscript.Allocation;
+import android.renderscript.Element;
+import android.renderscript.RenderScript;
+import android.renderscript.ScriptIntrinsicYuvToRGB;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.MenuInflater;
@@ -67,11 +74,14 @@ import com.google.android.gms.maps.model.Marker;
 import com.google.android.gms.maps.model.MarkerOptions;
 import com.google.android.gms.maps.model.Polyline;
 import com.google.android.gms.maps.model.PolylineOptions;
+import com.loopj.android.http.AsyncHttpClient;
+import com.loopj.android.http.AsyncHttpResponseHandler;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -85,6 +95,7 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.SocketException;
 import java.net.UnknownHostException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -93,6 +104,10 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -104,6 +119,11 @@ import androidx.fragment.app.FragmentManager;
 import androidx.fragment.app.FragmentTransaction;
 import androidx.preference.Preference;
 import androidx.preference.PreferenceManager;
+import cz.msebera.android.httpclient.Header;
+import cz.msebera.android.httpclient.HttpEntity;
+import cz.msebera.android.httpclient.entity.ByteArrayEntity;
+import cz.msebera.android.httpclient.entity.ContentType;
+import cz.msebera.android.httpclient.message.BasicHeader;
 import dji.common.camera.SettingsDefinitions;
 import dji.common.error.DJIError;
 import dji.common.error.DJISDKError;
@@ -189,7 +209,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
     private String mNewInbound = "";
     private String mNewDJI = "";
     private DatagramSocket socket;
-    public  DroneModel mModel;
+    public DroneModel mModel;
     private Boolean mExtRunning = false;
     private LocationManager locationManager;
     private double m_host_lat = -500;
@@ -236,6 +256,14 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
     public String last_downloaded_file;
     public boolean downloadError = false;
     public int lastDownloadedIndex = -1;
+    private ThreadPoolExecutor imageExecutorService;
+
+    private RenderScript rs;
+    private ScriptIntrinsicYuvToRGB yuvToRgbIntrinsic;
+    private Allocation aIn;
+    private Bitmap bmpout;
+    private Allocation aOut;
+    private int counter = 0;
 
     private String AIaddress = "127.0.0.1";
     private int AIport = 7001;
@@ -285,9 +313,9 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         if (ActivityCompat.checkSelfPermission(this,
                 Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
                 ActivityCompat.checkSelfPermission(this,
-                Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                        Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             Log.e(TAG, "Missing right to access GPS location!");
-        }else {
+        } else {
             locationManager.requestLocationUpdates(
                     LocationManager.GPS_PROVIDER, 5000, 10, locationListener);
         }
@@ -415,7 +443,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         }
 
         videostreamPreviewTtView.setSurfaceTextureListener(mSurfaceTextureListener);
-        if ( mModel.m_camera != null) {
+        if (mModel.m_camera != null) {
             if (!mExternalVideoOut) {
                 if (mIsTranscodedVideoFeedNeeded) {
                     if (standardVideoFeeder != null) {
@@ -477,6 +505,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         }
 
         if (mCodecManager != null) {
+            Log.e(TAG, "VIDEO codec destroy");
             mCodecManager.cleanSurface();
             mCodecManager.destroyCodec();
         }
@@ -513,49 +542,49 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         LatLng marker = new LatLng(m_host_lat, m_host_lon);
         aMap.moveCamera(CameraUpdateFactory.newLatLngZoom(marker, 14F));
 
-        aMap.setOnMapClickListener((point)-> {
+        aMap.setOnMapClickListener((point) -> {
 
             Log.d(TAG, "Goto: " + point.toString());
-                AlertDialog.Builder alertDialog2 = new AlertDialog.Builder(this);
-                alertDialog2.setIcon(R.mipmap.track_right);
-                alertDialog2.setTitle("AI Mavlink/Python function selector!");
-                alertDialog2.setMessage("Clikked");
-                alertDialog2.setNegativeButton("Cancel",
-                        (dialog, which) -> {
-                            dialog.cancel();
-                        });
-                alertDialog2.setNeutralButton("Add to Waypoint list",
-                        (dialog, which) -> {
-                            markWaypoint(point, true);
-                            Waypoint mWaypoint = new Waypoint(point.latitude, point.longitude,  mModel.m_alt);
-                            //Add Waypoints to Waypoint arraylist;
-                            if (waypointMissionBuilder != null) {
-                                waypointList.add(mWaypoint);
-                                waypointMissionBuilder.waypointList(waypointList).waypointCount(waypointList.size());
-                            } else {
-                                waypointMissionBuilder = new WaypointMission.Builder();
-                                waypointList.add(mWaypoint);
-                                waypointMissionBuilder.waypointList(waypointList).waypointCount(waypointList.size());
-                            }
-                            dialog.cancel();
-                        });
-                alertDialog2.setPositiveButton ("Accept",
-                        (dialog, which) -> {
-                            // If we are airborn...
-                            if( mModel.m_alt > -5.0) {
-                                markWaypoint(point, false);
-                                mModel.goto_position(point.latitude, point.longitude, mModel.m_alt, 0);
-                                dialog.cancel();
-                            }else {
-                                Log.d(TAG, "Cannot Add Waypoint");
-                                Toast.makeText(getApplicationContext(), "Cannot goto position!!!", Toast.LENGTH_LONG).show();
-                            }
+            AlertDialog.Builder alertDialog2 = new AlertDialog.Builder(this);
+            alertDialog2.setIcon(R.mipmap.track_right);
+            alertDialog2.setTitle("AI Mavlink/Python function selector!");
+            alertDialog2.setMessage("Clikked");
+            alertDialog2.setNegativeButton("Cancel",
+                    (dialog, which) -> {
+                        dialog.cancel();
                     });
-                ///
-                this.runOnUiThread(() -> {
-                    alertDialog2.show();
-                });
-         });
+            alertDialog2.setNeutralButton("Add to Waypoint list",
+                    (dialog, which) -> {
+                        markWaypoint(point, true);
+                        Waypoint mWaypoint = new Waypoint(point.latitude, point.longitude, mModel.m_alt);
+                        //Add Waypoints to Waypoint arraylist;
+                        if (waypointMissionBuilder != null) {
+                            waypointList.add(mWaypoint);
+                            waypointMissionBuilder.waypointList(waypointList).waypointCount(waypointList.size());
+                        } else {
+                            waypointMissionBuilder = new WaypointMission.Builder();
+                            waypointList.add(mWaypoint);
+                            waypointMissionBuilder.waypointList(waypointList).waypointCount(waypointList.size());
+                        }
+                        dialog.cancel();
+                    });
+            alertDialog2.setPositiveButton("Accept",
+                    (dialog, which) -> {
+                        // If we are airborn...
+                        if (mModel.m_alt > -5.0) {
+                            markWaypoint(point, false);
+                            mModel.goto_position(point.latitude, point.longitude, mModel.m_alt, 0);
+                            dialog.cancel();
+                        } else {
+                            Log.d(TAG, "Cannot Add Waypoint");
+                            Toast.makeText(getApplicationContext(), "Cannot goto position!!!", Toast.LENGTH_LONG).show();
+                        }
+                    });
+            ///
+            this.runOnUiThread(() -> {
+                alertDialog2.show();
+            });
+        });
 
         updateDroneLocation();
     }
@@ -566,8 +595,10 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         markerOptions.position(point);
         markerOptions.icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_BLUE));
 
-        if(keep) {
-            if(m_line.size() == 0){ m_lastPos = new LatLng(mModel.get_current_lat(), mModel.get_current_lat()); }
+        if (keep) {
+            if (m_line.size() == 0) {
+                m_lastPos = new LatLng(mModel.get_current_lat(), mModel.get_current_lat());
+            }
             m_line.add(aMap.addPolyline(new PolylineOptions()
                     .add(m_lastPos, point)
                     .width(5)
@@ -575,8 +606,8 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
             m_lastPos = point;
 
-        }else{
-            for( Polyline line : m_line){
+        } else {
+            for (Polyline line : m_line) {
                 line.remove();
             }
             m_line.clear();
@@ -599,18 +630,20 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
                 final MarkerOptions GCS_markerOptions = new MarkerOptions();
                 GCS_markerOptions.position(new LatLng(m_host_lat, m_host_lon));
-                BitmapDrawable bitmapdraw = (BitmapDrawable)getResources().getDrawable(R.drawable.pilot, null);
+                BitmapDrawable bitmapdraw = (BitmapDrawable) getResources().getDrawable(R.drawable.pilot, null);
                 Bitmap smallMarker;
 
                 if (compare_height == 0) {
                     smallMarker = Bitmap.createScaledBitmap(bitmapdraw.getBitmap(), 32, 32, false);
-                }else{
+                } else {
                     smallMarker = Bitmap.createScaledBitmap(bitmapdraw.getBitmap(), 64, 64, false);
                 }
                 GCS_markerOptions.icon(BitmapDescriptorFactory.fromBitmap(smallMarker));
 
                 runOnUiThread(() -> {
-                    if (gcsMarker != null) { gcsMarker.remove(); }
+                    if (gcsMarker != null) {
+                        gcsMarker.remove();
+                    }
                     gcsMarker = aMap.addMarker(GCS_markerOptions);
 //                aMap.moveCamera(CameraUpdateFactory.newLatLng(pos));
                 });
@@ -623,28 +656,29 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
                 pos = new LatLng(droneLocationLat, droneLocationLng);
             } else {
                 LocationCoordinate2D loc = mModel.getSimPos2D();
-                if(checkGpsCoordination(loc.getLatitude(),loc.getLongitude())) {
+                if (checkGpsCoordination(loc.getLatitude(), loc.getLongitude())) {
                     pos = new LatLng(loc.getLatitude(), loc.getLongitude());
-                }
-                else{
-                    pos = new LatLng(62,12);
+                } else {
+                    pos = new LatLng(62, 12);
                 }
             }
             // Add Drone location to map...
             final MarkerOptions markerOptions = new MarkerOptions();
             markerOptions.position(pos);
-            BitmapDrawable bitmapdraw = (BitmapDrawable)getResources().getDrawable(R.drawable.drone_img, null);
+            BitmapDrawable bitmapdraw = (BitmapDrawable) getResources().getDrawable(R.drawable.drone_img, null);
             Bitmap smallMarker;
 
             if (compare_height == 0) {
                 smallMarker = Bitmap.createScaledBitmap(bitmapdraw.getBitmap(), 32, 32, false);
-            }else{
+            } else {
                 smallMarker = Bitmap.createScaledBitmap(bitmapdraw.getBitmap(), 64, 64, false);
             }
             markerOptions.icon(BitmapDescriptorFactory.fromBitmap(smallMarker));
 
             runOnUiThread(() -> {
-                if (droneMarker != null) { droneMarker.remove(); }
+                if (droneMarker != null) {
+                    droneMarker.remove();
+                }
                 if (checkGpsCoordination(pos.latitude, pos.longitude)) {
                     droneMarker = aMap.addMarker(markerOptions);
                     aMap.moveCamera(CameraUpdateFactory.newLatLng(pos));
@@ -684,31 +718,34 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         }
 
         @Override
-        public void onProviderDisabled(String provider) {}
+        public void onProviderDisabled(String provider) {
+        }
 
         @Override
-        public void onProviderEnabled(String provider) {}
+        public void onProviderEnabled(String provider) {
+        }
 
         @Override
-        public void onStatusChanged(String provider, int status, Bundle extras) {}
+        public void onStatusChanged(String provider, int status, Bundle extras) {
+        }
     }
 
     private void initFlightController() {
         if (mModel.mFlightController != null) {
             mModel.mFlightController.setStateCallback(
-                djiFlightControllerCurrentState -> {
-                    droneLocationLat = djiFlightControllerCurrentState.getAircraftLocation().getLatitude();
-                    droneLocationLng = djiFlightControllerCurrentState.getAircraftLocation().getLongitude();
+                    djiFlightControllerCurrentState -> {
+                        droneLocationLat = djiFlightControllerCurrentState.getAircraftLocation().getLatitude();
+                        droneLocationLng = djiFlightControllerCurrentState.getAircraftLocation().getLongitude();
 
-                    if (checkGpsCoordination(droneLocationLat, droneLocationLng)) {
-                        // If we got no data from GCS then use the initial Drone location
-                        if (m_host_lat == -500 && m_host_lon == -500) {
-                            m_host_lat = droneLocationLat;
-                            m_host_lon = droneLocationLng+0.00005;
+                        if (checkGpsCoordination(droneLocationLat, droneLocationLng)) {
+                            // If we got no data from GCS then use the initial Drone location
+                            if (m_host_lat == -500 && m_host_lon == -500) {
+                                m_host_lat = droneLocationLat;
+                                m_host_lon = droneLocationLng + 0.00005;
+                            }
+                            updateDroneLocation();
                         }
-                        updateDroneLocation();
-                    }
-            });
+                    });
         }
     }
 
@@ -720,6 +757,9 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
     protected void onCreate(Bundle savedInstanceState) {
         Log.e(TAG, "onCreate()");
         super.onCreate(savedInstanceState);
+
+        imageExecutorService = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(1), Executors.defaultThreadFactory(), new ThreadPoolExecutor.DiscardOldestPolicy());
 
         //---------------- Hide top bar ---
         Objects.requireNonNull(getSupportActionBar()).hide();
@@ -737,19 +777,19 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         prefs = PreferenceManager.getDefaultSharedPreferences(MainActivity.this);
 
         mProduct = RDApplication.getProductInstance(); // Should be set by Connection ...
-        if(mProduct != null){
+        if (mProduct != null) {
             try {
                 mProductModel = mProduct.getModel();
-            }catch(Exception e){
+            } catch (Exception e) {
                 Log.d(TAG, "exception", e);
                 mProductModel = Model.MAVIC_PRO; // Just a dummy value should we be in test mode... (No Target)
             }
-        }else{
+        } else {
             // We need to make this; if no device or if sin mode...
             // Will support alternative video source...
             Log.d(TAG, "Starting external video input...");
             int port = Integer.parseInt(Objects.requireNonNull(prefs.getString("pref_external_video", "0")));
-            if(port > 1000) {
+            if (port > 1000) {
                 startVideoLoop(port);
             }
         }
@@ -771,7 +811,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         mMavlinkReceiver = new MAVLinkReceiver(this, mModel);
         // Set some user values for the AI assist functionallity.
         AIaddress = prefs.getString("pref_ai_ip", "127.0.0.1");
-        AIport  = Integer.parseInt(Objects.requireNonNull(prefs.getString("pref_ai_port", "2000")));
+        AIport = Integer.parseInt(Objects.requireNonNull(prefs.getString("pref_ai_port", "2000")));
 
         mMavlinkReceiver.AIenabled = prefs.getBoolean("pref_ai_telemetry_enabled", true);
 
@@ -839,7 +879,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         //--------------------------------------------------------------
         // Make the Report button....
         Button mBtnRepport = findViewById(R.id.btn_Report);
-        mBtnRepport.setOnClickListener(v -> SetMesasageBox("com.example.sendmail",1));
+        mBtnRepport.setOnClickListener(v -> SetMesasageBox("com.example.sendmail", 1));
 /*
         StateListDrawable listDrawable = new StateListDrawable();
         listDrawable.addState(new int[] {android.R.attr.state_pressed},  mBtnRepport.getBackground());
@@ -857,8 +897,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
     }
 
     // Toggle AI mission mode...
-    public void Set_ai_mode()
-    {
+    public void Set_ai_mode() {
         Button mBtnAI = findViewById(R.id.btn_AI_start);
         Drawable connectedDrawable;
 
@@ -871,10 +910,9 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
             }
 
             mBtnAI.setBackground(connectedDrawable);
-        }
-        else{
+        } else {
             logMessageDJI("AI not activated in setup menu !!!!!");
-            NotificationHandler.notifySnackbar(findViewById(R.id.snack),R.string.ai_not_active, LENGTH_LONG);
+            NotificationHandler.notifySnackbar(findViewById(R.id.snack), R.string.ai_not_active, LENGTH_LONG);
             mMavlinkReceiver.AIstat = false;
             connectedDrawable = getResources().getDrawable(R.mipmap.track_right, null);
             mBtnAI.setBackground(connectedDrawable);
@@ -883,11 +921,11 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
     // If AI button is pressed then start the AI Pluggin ...
     protected void SetMesasageBox(String msg, int type) {
-        switch (type){
+        switch (type) {
             case 1:
                 //--------------------------------------------------------------
                 logMessageDJI("Init media manager and fetch image...");
-                NotificationHandler.notifySnackbar(findViewById(R.id.snack),R.string.hold, LENGTH_LONG);
+                NotificationHandler.notifySnackbar(findViewById(R.id.snack), R.string.hold, LENGTH_LONG);
 
                 List<String> address = new ArrayList<String>();
                 String Eemail = sharedPreferences.getString("pref_email_name1", " ");
@@ -986,7 +1024,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
                             logMessageDJI("can't change mode of camera, error: " + djiError.getDescription());
                         }
                     });
-                    if (mProduct.getModel().equals(Model.MAVIC_AIR_2)){
+                    if (mProduct.getModel().equals(Model.MAVIC_AIR_2)) {
                         mProduct.getCamera()
                                 .setFlatMode(SettingsDefinitions.FlatCameraMode.PHOTO_SINGLE, djiError -> {
                                     if (djiError != null) {
@@ -994,14 +1032,12 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
                                         logMessageDJI("can't change mode of camera, error: " + djiError.getDescription());
                                     }
                                 });
-                    }
-                    else {
+                    } else {
                         mModel.m_camera.setMode(SettingsDefinitions.CameraMode.SHOOT_PHOTO, djiError -> {
                             if (djiError != null) {
                                 Log.e(TAG, "can't change mode of camera, error: " + djiError.getDescription());
                                 logMessageDJI("can't change mode of camera, error: " + djiError.getDescription());
-                            }
-                            else{
+                            } else {
                                 logMessageDJI("Camera Mode set OK...");
                             }
                         });
@@ -1036,8 +1072,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
 
     // Start the AI Pluggin (Developed by the customers...)
-    public boolean startActivity(String pluggin)
-    {
+    public boolean startActivity(String pluggin) {
         Intent intent = getPackageManager().getLaunchIntentForPackage(pluggin);
         if (intent == null) {
             // Bring user to the market or let them choose an app?
@@ -1046,15 +1081,15 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         }
         if (intent != null) {
 
-            if( mMavlinkReceiver.AIenabled == true){
+            if (mMavlinkReceiver.AIenabled == true) {
                 intent.putExtra("password", "thisisrosettadrone246546101");
                 intent.putExtra("ip", AIaddress);
                 intent.putExtra("port", AIport);
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(intent);
-            }else{
+            } else {
                 logMessageDJI("AI not enabled!");
-                NotificationHandler.notifySnackbar(findViewById(R.id.snack),R.string.ai_not_active, LENGTH_LONG);
+                NotificationHandler.notifySnackbar(findViewById(R.id.snack), R.string.ai_not_active, LENGTH_LONG);
 
             }
         }
@@ -1072,7 +1107,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
             case Phantom_3_4K:
             case MAVIC_MINI:
             case MAVIC_PRO:
-            //case MAVIC_2_ENTERPRISE_DUAL:
+                //case MAVIC_2_ENTERPRISE_DUAL:
             case INSPIRE_1:
             case Spark:
             case MAVIC_AIR_2:
@@ -1106,13 +1141,27 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
             videoViewHeight = height;
 
             Log.d(TAG, "real onSurfaceTextureAvailable: width " + videoViewWidth + " height " + videoViewHeight + " Mode: " + compare_height);
+
             if (mCodecManager == null) {
-                mCodecManager = new DJICodecManager(getApplicationContext(), surface, width, height);
+                mCodecManager = new DJICodecManager(getApplicationContext(), (SurfaceTexture) null, width, height);
             } else {
-                mCodecManager.changeOutputSurface(surface);
-                mCodecManager.onSurfaceSizeChanged(width, height, 0);
+                //mCodecManager.changeOutputSurface(surface);
+                //mCodecManager.onSurfaceSizeChanged(width, height, 0);
             }
+
+            Log.wtf(TAG, "VIDEO: add YUV callback");
+            mCodecManager.setYuvDataCallback((mediaFormat, yuvFrame, dataSize, frameWidth, frameHeight) -> {
+                final byte[] bytes = new byte[dataSize];
+                yuvFrame.get(bytes);
+                //Log.wtf(TAG, "VIDEO: GOT YUV");
+                imageExecutorService.execute(() -> processYuvFrame(bytes,
+                        frameWidth, frameHeight));
+
+            });
+
+
         }
+
 
         @Override
         public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
@@ -1135,16 +1184,148 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         }
     };
 
+
+    private void processYuvFrame(byte[] yuvFrame, int width, int height) {
+        //Log.wtf(TAG, "VIDEO: processYuvFrame");
+        if (yuvFrame.length < width * height) {
+            Log.d("DJI TEST", "yuvFrame size is too small " + yuvFrame.length);
+            return;
+        }
+
+        int yLength = width * height;
+
+
+        int componentSize = width * height / 4;
+        byte[] nu = new byte[componentSize];
+        byte[] nv = new byte[componentSize];
+
+        int uvWidth = width / 2;
+        int uvHeight = height / 2;
+        for (int x = 0; x < uvWidth / 2; x++) {
+            for (int y = 0; y < uvHeight / 2; y++) {
+                byte uSample1 = yuvFrame[yLength + 2 * (y * uvWidth + x) + 1];
+                byte uSample2 = yuvFrame[yLength + 2 * (y * uvWidth + x + uvWidth / 2) + 1];
+
+                byte vSample1 = yuvFrame[yLength + 2 * ((y + uvHeight / 2) * uvWidth + x)];
+                byte vSample2 = yuvFrame[yLength + 2 * ((y + uvHeight / 2) * uvWidth + x + uvWidth / 2)];
+
+                final int index = 2 * (y * uvWidth + x);
+                nu[index] = uSample1;
+                nu[index + 1] = uSample1;
+                nu[index + uvWidth] = uSample2;
+                nu[index + 1 + uvWidth] = uSample2;
+
+                nv[index] = vSample1;
+                nv[index + 1] = vSample1;
+                nv[index + uvWidth] = vSample2;
+                nv[index + 1 + uvWidth] = vSample2;
+            }
+        }
+        //nv21test
+        for (int i = 0; i < componentSize; i++) {
+            yuvFrame[yLength + (i * 2)] = nv[i];
+            yuvFrame[yLength + (i * 2) + 1] = nu[i];
+        }
+
+        processFrame(yuvFrame, width, height);
+    }
+
+
+    /**
+     * @param buf NV21 YUV image
+     */
+    private void processFrame(byte[] buf, int width, int height) {
+        if (rs == null) {
+            //SRC: https://stackoverflow.com/questions/35826709/yuv-nv21-image-converting-to-bitmap/43551798#43551798
+            rs = RenderScript.create(this);
+            yuvToRgbIntrinsic = ScriptIntrinsicYuvToRGB.create(rs, Element.U8_4(rs));
+
+            // you don´t need Type.Builder objects , with cameraPreviewWidth and cameraPreviewHeight do:
+            int yuvDataLength = width * height * 3 / 2;  // this is 12 bit per pixel
+            aIn = Allocation.createSized(rs, Element.U8(rs), yuvDataLength);
+
+            bmpout = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+
+            // create output allocation from bitmap
+            aOut = Allocation.createFromBitmap(rs, bmpout);  // this simple !
+
+            // set the script´s in-allocation, this has to be done only once
+            yuvToRgbIntrinsic.setInput(aIn);
+        }
+
+        aIn.copyFrom(buf);
+        yuvToRgbIntrinsic.forEach(aOut);
+        aOut.copyTo(bmpout);
+
+        runOnUiThread(() -> {
+            Rect rc = new Rect();
+            rc.set(0, 0, width, height);
+            Canvas canvas = videostreamPreviewTtView.lockCanvas();
+            canvas.drawBitmap(bmpout, 0, 0, null);
+            videostreamPreviewTtView.unlockCanvasAndPost(canvas);
+        });
+
+
+
+
+        if (counter > 10) {
+            sendImage(bmpout);
+            counter = 0;
+        }
+        counter = counter + 1;
+
+        //saveImage(bmpout);
+        //tensorflowTest.processImage(bmpout, buf);
+
+        //To test without GPS fix
+        //product.getPositionListener().positionChanged(new Position(0, 0, 100));
+    }
+
+    private void sendImage(Bitmap bmp) {
+        ByteArrayOutputStream stream = new ByteArrayOutputStream();
+        bmp.compress(Bitmap.CompressFormat.JPEG, 80, stream);
+        byte[] byteArray = stream.toByteArray();
+        //String url = "http://192.168.178.37:5000";
+        String videoIP = getVideoIP();
+        String url = "http://" + videoIP + ":5000";
+        //Log.wtf(TAG, "VIDEO: SEND IMG" + url);
+
+
+        AsyncHttpClient client = new AsyncHttpClient();
+        //RequestParams params = new RequestParams();
+        //params.put("test", "byteArray");
+        HttpEntity entity = new ByteArrayEntity(byteArray, ContentType.DEFAULT_BINARY);
+        Header[] headers = new Header[1];
+        synchronized (this) {
+            headers[0] = new BasicHeader("GPS", "DUMMY"); //TODO
+        }
+
+
+        client.put(this, url, headers, entity, "jpeg", new AsyncHttpResponseHandler(true) {
+            @Override
+            public void onSuccess(int statusCode, Header[] headers, byte[] responseBody) {
+
+            }
+
+            @Override
+            public void onFailure(int statusCode, Header[] headers, byte[] responseBody, Throwable error) {
+                Log.wtf(TAG, "VIDEO: SEND failed" + statusCode);
+            }
+        });
+    }
+
     //---------------------------------------------------------------------------------------
     //---------------------------------------------------------------------------------------
 
     private DJISDKManager.SDKManagerCallback mDJISDKManagerCallback = new DJISDKManager.SDKManagerCallback() {
 
         @Override
-        public void onDatabaseDownloadProgress(long x, long y) {}
+        public void onDatabaseDownloadProgress(long x, long y) {
+        }
 
         @Override
-        public void onInitProcess(DJISDKInitEvent a, int x) {}
+        public void onInitProcess(DJISDKInitEvent a, int x) {
+        }
 
         @Override
         public void onProductDisconnect() {
@@ -1479,7 +1660,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
             compare_height = 0;
         }
         v.setZ(101.f);
-  //      updateDroneLocation();
+        //      updateDroneLocation();
     }
 
     // Hmm is this ever called...
@@ -1729,16 +1910,16 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
             mModel.setMaxHeight(Integer.parseInt(Objects.requireNonNull(prefs.getString("pref_drone_max_height", "500"))));
             FLAG_DRONE_MAX_HEIGHT_CHANGED = false;
         }
-        if(FLAG_DRONE_AI_IP_CHANGED) {
+        if (FLAG_DRONE_AI_IP_CHANGED) {
             mModel.setAiIP(prefs.getString("pref_ai_ip", "127.0.0.1"));
             FLAG_DRONE_AI_IP_CHANGED = false;
         }
-        if(FLAG_DRONE_AI_PORT_CHANGED) {
+        if (FLAG_DRONE_AI_PORT_CHANGED) {
             mModel.setAiPort(Integer.parseInt(Objects.requireNonNull(prefs.getString("pref_ai_port", "2000"))));
             FLAG_DRONE_AI_PORT_CHANGED = false;
 
         }
-        if(FLAG_DRONE_AI_ENABLED_CHANGED) {
+        if (FLAG_DRONE_AI_ENABLED_CHANGED) {
             mModel.setAIenable(prefs.getBoolean("pref_ai_telemetry_enabled", true));
             FLAG_DRONE_AI_ENABLED_CHANGED = false;
         }
@@ -1774,7 +1955,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
             FLAG_DRONE_LANDING_PROTECTION_CHANGED = false;
         }
 
-        if(FLAG_MAPS_CHANGED){
+        if (FLAG_MAPS_CHANGED) {
             mMaptype = Integer.parseInt(Objects.requireNonNull(prefs.getString("pref_maptype_mode", "0")));
             aMap.setMapType(mMaptype);
             FLAG_MAPS_CHANGED = false;
@@ -1907,7 +2088,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
                                 if (mainActivityWeakReference.get().prefs.getBoolean("pref_log_mavlink", false))
                                     mainActivityWeakReference.get().logMessageFromGCS(msg.toString());
 
-                           //     Log.d("TERJE", "process...()");
+                                //     Log.d("TERJE", "process...()");
                                 mainActivityWeakReference.get().mMavlinkReceiver.process(msg);
                             }
                         }
@@ -2031,8 +2212,8 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
     //---------------------------------------------------------------------------------------
     // Receive alternative H.264 video data, mostly for debugging or simulation...
-    private void startVideoLoop(int port){
-        if(!mExtRunning) {
+    private void startVideoLoop(int port) {
+        if (!mExtRunning) {
             mExtRunning = true;
             runOnUiThread(() -> {
                 try {
@@ -2042,6 +2223,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
                         DatagramPacket recv_packet = new DatagramPacket(receivedata, receivedata.length);
                         clientsocket.receive(recv_packet);
                         if (mCodecManager != null) {
+                            Log.e(TAG, "VIDEO to codec");
                             mCodecManager.sendDataToDecoder(recv_packet.getData(), recv_packet.getData().length);
                         }
                         // Send raw H264 to the FFMPEG parser...
@@ -2054,6 +2236,7 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
             mExtRunning = false;
         }
     }
+
     // --------------------------------------------------------------------------------------------
     // To be moved later for better structure....
     private boolean isTranscodedVideoFeedNeeded() {

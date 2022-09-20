@@ -54,6 +54,7 @@ public class VideoService extends Service implements NativeHelper.NativeDataList
 
     @Override
     public void onDestroy() {
+        Log.e(TAG, "onDestroy Video ");
         setActionDroneDisconnected();
     }
 
@@ -115,7 +116,7 @@ public class VideoService extends Service implements NativeHelper.NativeDataList
         try {
             mPacketizer.getRtpSocket().setDestination(InetAddress.getByName(ip), videoPort, 5000);
         } catch (UnknownHostException e) {
-            Log.e(TAG, "Error setting destination for RTP packetizer", e);
+            Log.e(TAG, "VIDEO Error setting destination for RTP packetizer", e);
         }
 
         isRunning = true;
